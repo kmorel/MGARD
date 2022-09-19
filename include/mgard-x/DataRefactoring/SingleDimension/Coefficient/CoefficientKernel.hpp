@@ -284,7 +284,8 @@ public:
 // we are decomposing are not adjacent to each other.
 template <DIM D, typename T, SIZE BlockSize, OPTION OP, typename DeviceType>
 class SingleDimensionCoefficientFunctorD : public Functor<DeviceType> {
-  // functor parameters
+  // TODO: Delete this impl
+  //  functor parameters
   DIM current_dim;
   SubArray<1, T, DeviceType> ratios;
   SubArray<D, T, DeviceType> fine_values;
@@ -387,6 +388,108 @@ private:
         ++fine_index[current_dim];
         ++coarse_index[current_dim];
         fine_values[fine_index] = coarse_values[coarse_index];
+      }
+    }
+  }
+};
+
+template <DIM D, typename T, SIZE BlockSize, typename DeviceType>
+class SingleDimensionCoefficientFunctorD<D, T, BlockSize, DECOMPOSE, DeviceType>
+    : public Functor<DeviceType> {
+  // functor parameters
+  DIM current_dim;
+  SubArray<1, T, DeviceType> ratios;
+  SubArray<D, T, DeviceType> fine_values;
+  SubArray<D, T, DeviceType> coarse_values;
+  SubArray<D, T, DeviceType> coefficients;
+
+  // thread local variables
+  T *fine_values_sm;
+  T *left_value;
+  T *middle_value;
+  T *right_value;
+  T *extra_value;
+  T *ratio;
+  bool in_range;
+  SIZE coarse_index[D];
+
+public:
+  SingleDimensionCoefficientFunctorD() = default;
+  MGARDX_CONT
+  SingleDimensionCoefficientFunctorD(DIM current_dim_,
+                                     SubArray<1, T, DeviceType> ratios_,
+                                     SubArray<D, T, DeviceType> fine_values_,
+                                     SubArray<D, T, DeviceType> coarse_values_,
+                                     SubArray<D, T, DeviceType> coefficients_)
+      : current_dim(current_dim_), ratios(ratios_), fine_values(fine_values_),
+        coarse_values(coarse_values_), coefficients(coefficients_) {}
+
+  MGARDX_CONT size_t shared_memory_size() {
+    return ((BlockSize * 4) + 1) * sizeof(T);
+  }
+
+  MGARDX_EXEC void Operation1() {
+    in_range = SingleDimensionCoefficientComputeCoarseIndex<BlockSize>(
+        *this, coefficients, coarse_index);
+
+    if (in_range) {
+      SIZE fine_index[D];
+      for (DIM d = 0; d < D; ++d) {
+        fine_index[d] = coarse_index[d];
+      }
+      fine_index[current_dim] *= 2;
+
+      const THREAD_IDX thread_idx = this->GetThreadIdX();
+      fine_values_sm = reinterpret_cast<T *>(this->GetSharedMemory());
+
+      left_value = fine_values_sm + thread_idx;
+      *left_value = fine_values[fine_index];
+
+      ++fine_index[current_dim];
+      middle_value = fine_values_sm + BlockSize + thread_idx;
+      *middle_value = fine_values[fine_index];
+
+      ++fine_index[current_dim];
+      right_value = fine_values_sm + (BlockSize * 2) + thread_idx;
+      *right_value = fine_values[fine_index];
+
+      // If we are one index away from the end of the array, then the array
+      // must be even and we need to load that last value because it will
+      // not be shared with another thread block.
+      if (fine_index[current_dim] == fine_values.shape(current_dim) - 2) {
+        ++fine_index[current_dim];
+        extra_value = fine_values_sm + (BlockSize * 3) + thread_idx;
+        *extra_value = fine_values[fine_index];
+      } else {
+        extra_value = nullptr;
+      }
+
+      ratio = fine_values_sm + (BlockSize * 4);
+      if (thread_idx == 0) {
+        *ratio = *ratios(coarse_index[current_dim] * 2);
+      }
+    }
+  }
+
+  MGARDX_EXEC void Operation2() {
+    if (in_range) {
+      const THREAD_IDX thread_idx = this->GetThreadIdX();
+
+      coefficients[coarse_index] =
+          *middle_value - lerp(*left_value, *right_value, *ratio);
+      coarse_values[coarse_index] = *left_value;
+      // If this is the last coefficient in the current_dim, need to also
+      // write out the right coarse. Normally, the right value is written by
+      // an overlapping thread, but there is no overlap at the right edge.
+      if (coarse_index[current_dim] == coefficients.shape(current_dim) - 1) {
+        ++coarse_index[current_dim];
+        coarse_values[coarse_index] = *right_value;
+        // If the size of the array is even, there is an extra value that
+        // cannot be used for interpolation. We need to copy that, too.
+        if ((fine_values.shape(current_dim) % 2) == 0) {
+          ++coarse_index[current_dim];
+          coarse_values[coarse_index] = *extra_value;
+        }
       }
     }
   }
