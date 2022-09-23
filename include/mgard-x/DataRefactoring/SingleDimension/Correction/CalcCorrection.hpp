@@ -11,6 +11,7 @@
 #include "../DataRefactoring.h"
 
 #include "../../MultiDimension/Correction/IterativeProcessingKernel.hpp"
+#include "../../MultiDimension/Correction/IterativeProcessingKernel3D.hpp"
 #include "../../MultiDimension/Correction/LevelwiseProcessingKernel.hpp"
 
 #include "MassTransKernel.hpp"
@@ -21,10 +22,10 @@
 namespace mgard_x {
 
 template <DIM D, typename T, typename DeviceType>
-void CalcCorrection(Hierarchy<D, T, DeviceType> &hierarchy,
-                    SubArray<D, T, DeviceType> &coeff,
-                    SubArray<D, T, DeviceType> &correction, SIZE curr_dim,
-                    SIZE l, int queue_idx) {
+void CalcCorrectionSDND(Hierarchy<D, T, DeviceType> &hierarchy,
+                        SubArray<D, T, DeviceType> &coeff,
+                        SubArray<D, T, DeviceType> &correction, SIZE curr_dim,
+                        SIZE l, int queue_idx) {
 
   SingleDimensionMassTrans<D, T, DeviceType>().Execute(
       curr_dim, SubArray(hierarchy.dist(l, curr_dim)),
@@ -76,6 +77,59 @@ void CalcCorrection(Hierarchy<D, T, DeviceType> &hierarchy,
     if (singledim_refactoring_debug_print) {
       PrintSubarray("Ipk3Reo", correction);
     }
+  }
+}
+
+template <DIM D, typename T, typename DeviceType>
+void CalcCorrectionSD3D(Hierarchy<D, T, DeviceType> &hierarchy,
+                        SubArray<D, T, DeviceType> &coeff,
+                        SubArray<D, T, DeviceType> &correction, SIZE curr_dim,
+                        SIZE l, int queue_idx) {
+
+  SingleDimensionMassTrans<D, T, DeviceType>().Execute(
+      curr_dim, SubArray(hierarchy.dist(l, curr_dim)),
+      SubArray(hierarchy.ratio(l, curr_dim)), coeff, correction, queue_idx);
+
+  if (singledim_refactoring_debug_print) {
+    PrintSubarray("SingleDimensionMassTrans", correction);
+  }
+
+  auto execute_kernel = [&](auto kernel) {
+    kernel.Execute(hierarchy.level_shape(l - 1, D - 3),
+                   hierarchy.level_shape(l - 1, D - 2),
+                   hierarchy.level_shape(l - 1, D - 1),
+                   hierarchy.am(l - 1, curr_dim), hierarchy.bm(l - 1, curr_dim),
+                   hierarchy.dist(l - 1, curr_dim), correction, queue_idx);
+    if (singledim_refactoring_debug_print) {
+      PrintSubarray("Ipk" + std::to_string(D - curr_dim) + "Reo3D", correction);
+    }
+  };
+
+  switch (curr_dim) {
+  case D - 1:
+    execute_kernel(Ipk1Reo3D<D, T, DeviceType>{});
+    break;
+  case D - 2:
+    execute_kernel(Ipk2Reo3D<D, T, DeviceType>{});
+    break;
+  case D - 3:
+    execute_kernel(Ipk3Reo3D<D, T, DeviceType>{});
+    break;
+  default:
+    // Sanity failed. Invalid dimension in 3D function.
+    std::abort();
+  }
+}
+
+template <DIM D, typename T, typename DeviceType>
+void CalcCorrection(Hierarchy<D, T, DeviceType> &hierarchy,
+                    SubArray<D, T, DeviceType> &coeff,
+                    SubArray<D, T, DeviceType> &correction, SIZE curr_dim,
+                    SIZE l, int queue_idx) {
+  if constexpr (D <= 3) {
+    CalcCorrectionSD3D(hierarchy, coeff, correction, curr_dim, l, queue_idx);
+  } else {
+    CalcCorrectionSDND(hierarchy, coeff, correction, curr_dim, l, queue_idx);
   }
 }
 
