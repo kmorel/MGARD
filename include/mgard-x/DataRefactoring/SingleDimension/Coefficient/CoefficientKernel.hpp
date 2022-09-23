@@ -285,15 +285,17 @@ public:
     // current_dim (i.e., D - 1). Figure out the start and end of the
     // block that the thread block has to collectively store.
     SIZE store_idx_start = (coarse_index[current_dim] - thread_idx) * 2;
-    SIZE store_idx_end = store_idx_start + BlockSize * 2 + 1;
-    if (store_idx_end > fine_values.shape(current_dim)) {
-      // Do not write past end of array
+    SIZE store_idx_end = store_idx_start + BlockSize * 2;
+    if (store_idx_end >= fine_values.shape(current_dim) - 2) {
+      // If we are one index away from the end of the the array, then
+      // we must be at the right boundary of the array. If we are two
+      // indices away, then we must be at the right boundary and there
+      // is an extra value because the width of the array is even. In
+      // either case, there is no overlap for these values and we have
+      // to write them out. In either of these cases or if we are
+      // extending past the end of the array, then we read in to the
+      // boundary of the array.
       store_idx_end = fine_values.shape(current_dim);
-    } else if (store_idx_end == fine_values.shape(current_dim) - 1) {
-      // If we are one value array from the end of the array, then the
-      // array must be even and we need to store that last value because
-      // it will not be shared with another thread block.
-      ++store_idx_end;
     } else {
       // No further modifications to store_idx_end needed.
     }
@@ -659,18 +661,19 @@ public:
     // We may need to participate in storing data along the
     // current_dim. Figure out the start and end of the block that
     // the thread block has to collectively store.
-    in_range = true;
     const THREAD_IDX thread_id_curdim = this->GetThreadIdY();
     SIZE store_idx_start = (coarse_index[current_dim] - thread_id_curdim) * 2;
-    SIZE store_idx_end = store_idx_start + BlockSizeCurrentDim * 2 + 1;
-    if (store_idx_end > fine_values.shape(current_dim)) {
-      // Do not write past end of array
+    SIZE store_idx_end = store_idx_start + BlockSizeCurrentDim * 2;
+    if (store_idx_end >= fine_values.shape(current_dim) - 2) {
+      // If we are one index away from the end of the the array, then
+      // we must be at the right boundary of the array. If we are two
+      // indices away, then we must be at the right boundary and there
+      // is an extra value because the width of the array is even. In
+      // either case, there is no overlap for these values and we have
+      // to write them out. In either of these cases or if we are
+      // extending past the end of the array, then we write out to the
+      // boundary of the array.
       store_idx_end = fine_values.shape(current_dim);
-    } else if (store_idx_end == fine_values.shape(current_dim) - 1) {
-      // If we are one value array from the end of the array, then the
-      // array must be even and we need to store that last value because
-      // it will not be shared with another thread block.
-      ++store_idx_end;
     } else {
       // No further modifications to store_idx_end needed.
     }
@@ -683,11 +686,13 @@ public:
         fine_index[current_dim] = store_idx_start + thread_id_curdim;
       } else {
         fine_index[d] = coarse_index[d];
-        in_range &= fine_index[d] < fine_values.shape(d);
       }
     }
 
-    if (in_range) {
+    // In the D-1 dimension, it is possible that the index extends past
+    // the end of the array due to the thread block size. Do not write
+    // out in that case.
+    if (fine_index[D - 1] < fine_values.shape(D - 1)) {
       SIZE sm_index = thread_id_curdim * BlockSizeX + this->GetThreadIdX();
       while (fine_index[current_dim] < store_idx_end) {
         fine_values[fine_index] = fine_values_sm[sm_index];
